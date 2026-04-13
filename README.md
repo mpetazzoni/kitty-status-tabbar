@@ -40,19 +40,16 @@ directory.
 
 ## Installation
 
-1. Clone or download this repository:
+1. Download `tab_bar.py` from the
+   [latest release](https://github.com/mpetazzoni/kitty-status-tabbar/releases/latest)
+   into your Kitty config directory:
 
    ```sh
-   git clone https://github.com/mpetazzoni/kitty-status-tabbar.git
+   curl -L https://github.com/mpetazzoni/kitty-status-tabbar/releases/latest/download/tab_bar.py \
+     -o ~/.config/kitty/tab_bar.py
    ```
 
-2. Symlink `tab_bar.py` into your Kitty config directory:
-
-   ```sh
-   ln -sf ~/path/to/kitty-status-tabbar/tab_bar.py ~/.config/kitty/tab_bar.py
-   ```
-
-3. Add to your `~/.config/kitty/kitty.conf`:
+2. Add to your `~/.config/kitty/kitty.conf`:
 
    ```conf
    tab_bar_style custom
@@ -60,10 +57,7 @@ directory.
    tab_bar_min_tabs 1
    ```
 
-   See [`kitty.conf.example`](kitty.conf.example) for a complete
-   snippet.
-
-4. Reload Kitty (`ctrl+shift+f5`) or restart it.
+3. Reload Kitty (`ctrl+shift+f5`) or restart it.
 
 ## Configuration
 
