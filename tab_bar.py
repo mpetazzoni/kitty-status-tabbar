@@ -43,25 +43,27 @@ TAILSCALE_TTL = 10.0  # seconds between tailscale checks
 BATTERY_TTL = 30.0  # seconds between battery checks
 TAB_BAR_REDRAW = 2.0  # seconds between tab bar redraws
 
-# Colors — Catppuccin Mocha palette, pre-converted for Kitty's drawing API.
-# We convert hex -> to_color -> int -> as_rgb once at import time so the
-# draw loop doesn't repeat this work every 2 seconds.
-_color_cache: dict[str, int] = {}
+# Colors — Catppuccin Mocha palette, pre-converted to Kitty's as_rgb
+# format at import time so the draw loop pays zero conversion cost.
+_HEX_GREEN = "#a6e3a1"
+_HEX_YELLOW = "#f9e2af"
+_HEX_ORANGE = "#fab387"
+_HEX_RED = "#f38ba8"
+_HEX_GRAY = "#6c7086"
+_HEX_TEXT = "#cdd6f4"
 
 
-def _rgb(hex_color: str) -> int:
-    """Convert a hex color to Kitty's as_rgb format, with caching."""
-    if hex_color not in _color_cache:
-        _color_cache[hex_color] = as_rgb(int(to_color(hex_color)))
-    return _color_cache[hex_color]
+def _hex_to_rgb(hex_color: str) -> int:
+    """Convert a hex color string to Kitty's as_rgb format."""
+    return as_rgb(int(to_color(hex_color)))
 
 
-COLOR_GREEN = "#a6e3a1"
-COLOR_YELLOW = "#f9e2af"
-COLOR_ORANGE = "#fab387"
-COLOR_RED = "#f38ba8"
-COLOR_GRAY = "#6c7086"
-COLOR_TEXT = "#cdd6f4"
+COLOR_GREEN = _hex_to_rgb(_HEX_GREEN)
+COLOR_YELLOW = _hex_to_rgb(_HEX_YELLOW)
+COLOR_ORANGE = _hex_to_rgb(_HEX_ORANGE)
+COLOR_RED = _hex_to_rgb(_HEX_RED)
+COLOR_GRAY = _hex_to_rgb(_HEX_GRAY)
+COLOR_TEXT = _hex_to_rgb(_HEX_TEXT)
 
 
 # ============================================================================
@@ -73,7 +75,7 @@ class Cell(NamedTuple):
     """A single status cell to render in the tab bar."""
 
     icon: str
-    color: str  # hex color for the icon
+    color: int  # pre-converted as_rgb color for the icon
     text: str
 
 
@@ -264,22 +266,20 @@ class TailscaleState:
     tailnet_name: str = ""
 
 
-# Kitty GUI apps run with a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin)
-# that doesn't include user directories like ~/.local/bin or Homebrew.
-# We search known locations for the tailscale CLI.
 _TAILSCALE_SEARCH_PATHS = [
     os.path.expanduser("~/.local/bin/tailscale"),
     "/opt/homebrew/bin/tailscale",
     "/usr/local/bin/tailscale",
     "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
 ]
-_tailscale_bin: str | None = None  # resolved on first use
 
 
 def _find_tailscale() -> str:
     """Find the tailscale binary. Returns path or empty string.
 
-    Checks shutil.which first (in case it's on PATH), then falls back
+    Kitty GUI apps run with a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin)
+    that doesn't include user directories like ~/.local/bin or Homebrew.
+    We check shutil.which first (in case it's on PATH), then fall back
     to known macOS locations.
     """
     found = shutil.which("tailscale")
@@ -291,11 +291,12 @@ def _find_tailscale() -> str:
     return ""
 
 
+# Resolved once at import time — the binary location never changes.
+_tailscale_bin = _find_tailscale()
+
+
 def _fetch_tailscale_status() -> TailscaleState:
     """Run tailscale status --json and parse the result."""
-    global _tailscale_bin
-    if _tailscale_bin is None:
-        _tailscale_bin = _find_tailscale()
     if not _tailscale_bin:
         return TailscaleState(backend_state="NotInstalled")
 
@@ -435,12 +436,19 @@ def _build_tailscale_cell() -> Cell | None:
             return Cell("󰒎 ", COLOR_RED, "unknown")
 
 
-#                  (icon_charging, icon_discharging, color_charging, color_discharging)
+class _BatteryTier(NamedTuple):
+    min_percent: int
+    icon_charging: str
+    icon_discharging: str
+    color_charging: int
+    color_discharging: int
+
+
 _BATTERY_TIERS = [
-    (80, "󰂅 ", "󰁹 ", COLOR_GREEN, COLOR_GREEN),
-    (50, "󰂉 ", "󰂀 ", COLOR_GREEN, COLOR_YELLOW),
-    (20, "󰂇 ", "󰁾 ", COLOR_YELLOW, COLOR_ORANGE),
-    (0, "󰢜 ", "󰁺 ", COLOR_ORANGE, COLOR_RED),
+    _BatteryTier(80, "󰂅 ", "󰁹 ", COLOR_GREEN, COLOR_GREEN),
+    _BatteryTier(50, "󰂉 ", "󰂀 ", COLOR_GREEN, COLOR_YELLOW),
+    _BatteryTier(20, "󰂇 ", "󰁾 ", COLOR_YELLOW, COLOR_ORANGE),
+    _BatteryTier(0, "󰢜 ", "󰁺 ", COLOR_ORANGE, COLOR_RED),
 ]
 
 
@@ -450,16 +458,10 @@ def _build_battery_cell() -> Cell | None:
     if state is None:
         return None
 
-    for (
-        threshold,
-        icon_charging,
-        icon_discharging,
-        color_charging,
-        color_discharging,
-    ) in _BATTERY_TIERS:
-        if state.percent >= threshold:
-            icon = icon_charging if state.charging else icon_discharging
-            color = color_charging if state.charging else color_discharging
+    for tier in _BATTERY_TIERS:
+        if state.percent >= tier.min_percent:
+            icon = tier.icon_charging if state.charging else tier.icon_discharging
+            color = tier.color_charging if state.charging else tier.color_discharging
             return Cell(icon, color, f"{state.percent}%")
 
     # Should never reach here, but just in case
@@ -530,9 +532,9 @@ def _draw_right_status(draw_data: DrawData, screen: Screen, cells: list[Cell]) -
 
     for cell in cells:
         screen.cursor.bg = default_bg
-        screen.cursor.fg = _rgb(cell.color)
+        screen.cursor.fg = cell.color
         screen.draw(cell.icon)
-        screen.cursor.fg = _rgb(COLOR_TEXT)
+        screen.cursor.fg = COLOR_TEXT
         screen.draw(cell.text)
         screen.draw("  ")
 
