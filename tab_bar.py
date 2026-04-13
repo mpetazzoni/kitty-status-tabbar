@@ -3,7 +3,7 @@
 Displays battery, ping latency, and Tailscale status in the right side
 of the tab bar. Tabs are rendered using Kitty's built-in powerline style.
 
-See PLAN.md for full design details.
+See AGENTS.md for full design details.
 """
 
 import json
@@ -83,7 +83,7 @@ class Cell(NamedTuple):
 #
 # We use SOCK_DGRAM + IPPROTO_ICMP which works unprivileged on macOS
 # (no root/setuid needed). We build ICMP echo request packets directly
-# and measure RTT with time.monotonic(). See PLAN.md for full rationale.
+# and measure RTT with time.monotonic(). See AGENTS.md for full rationale.
 # ============================================================================
 
 # ICMP packet constants
@@ -92,9 +92,16 @@ ICMP_ECHO_REPLY = 0
 ICMP_HEADER_FORMAT = "!BBHHH"  # type, code, checksum, id, sequence
 ICMP_HEADER_SIZE = struct.calcsize(ICMP_HEADER_FORMAT)
 
+# Generation counter: minted on each import and stored on the Boss
+# singleton (which survives module re-imports across config reloads).
+# The timer callback and ping threads capture their generation at
+# creation time and compare against the boss's current value — when
+# they differ, the callback becomes a no-op and threads exit.
+_generation = id(object())
+get_boss()._tab_bar_gen = _generation
+
 _ping_results: dict[str, float | None] = {t: None for t in PING_TARGETS}
 _ping_lock = threading.Lock()
-_ping_started = False
 
 
 def _icmp_checksum(data: bytes) -> int:
@@ -185,9 +192,13 @@ def _ping_host(target: str, timeout: float = PING_TIMEOUT) -> float | None:
         sock.close()
 
 
-def _ping_target_loop(target: str) -> None:
-    """Background thread: continuously ping a single target."""
-    while True:
+def _ping_target_loop(target: str, gen: int) -> None:
+    """Background thread: continuously ping a single target.
+
+    Exits when the generation on the Boss singleton changes (i.e. the
+    module was re-imported due to a config reload).
+    """
+    while gen == get_boss()._tab_bar_gen:
         rtt = _ping_host(target)
         with _ping_lock:
             _ping_results[target] = rtt
@@ -202,13 +213,11 @@ def _get_best_ping() -> float | None:
 
 
 def _start_ping_threads() -> None:
-    """Start one background thread per ping target (once)."""
-    global _ping_started
-    if _ping_started:
-        return
-    _ping_started = True
+    """Start one background thread per ping target."""
     for target in PING_TARGETS:
-        t = threading.Thread(target=_ping_target_loop, args=(target,), daemon=True)
+        t = threading.Thread(
+            target=_ping_target_loop, args=(target, _generation), daemon=True
+        )
         t.start()
 
 
@@ -325,9 +334,9 @@ def _fetch_battery_status() -> BatteryState:
         if result.returncode != 0:
             return BatteryState()
 
-        # Parse: "62%; discharging;" or "85%; charging;" or "100%; charged;"
+        # Parse: "62%; discharging;" or "85%; charging;" or "100%; not charging;"
         match = re.search(
-            r"(\d+)%;\s*(charging|discharging|charged|finishing charge)",
+            r"(\d+)%;\s*([\w ]+);",
             result.stdout,
         )
         if not match:
@@ -496,14 +505,24 @@ def _draw_right_status(draw_data: DrawData, screen: Screen, cells: list[Cell]) -
 # Main Entry Point
 # ============================================================================
 
-_timer_id = None
 
+def _make_redraw_callback(gen: int):
+    """Create a redraw callback bound to a specific generation.
 
-def _redraw_tab_bar(timer_id: int) -> None:
-    """Mark all tab bars as dirty, triggering a redraw."""
-    _advance_spinner()
-    for tm in get_boss().all_tab_managers:
-        tm.mark_tab_bar_dirty()
+    On config reload, Kitty re-imports the module but can't cancel old
+    timers. The closure captures its generation at creation time; when
+    it no longer matches the boss's current generation, it becomes a
+    cheap no-op.
+    """
+
+    def _redraw_tab_bar(timer_id: int) -> None:
+        if gen != get_boss()._tab_bar_gen:
+            return
+        _advance_spinner()
+        for tm in get_boss().all_tab_managers:
+            tm.mark_tab_bar_dirty()
+
+    return _redraw_tab_bar
 
 
 def draw_tab(
@@ -521,10 +540,9 @@ def draw_tab(
     Delegates tab rendering to powerline, then draws status cells on the
     last tab.
     """
-    global _timer_id
-
-    if _timer_id is None:
-        _timer_id = add_timer(_redraw_tab_bar, TAB_BAR_REDRAW, True)
+    if not getattr(draw_tab, "_initialized", False):
+        draw_tab._initialized = True
+        add_timer(_make_redraw_callback(_generation), TAB_BAR_REDRAW, True)
         _start_ping_threads()
 
     draw_tab_with_powerline(

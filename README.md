@@ -122,7 +122,7 @@ default. Change the `COLOR_*` constants to match your theme.
 - **Ping** uses pure Python ICMP sockets (`SOCK_DGRAM` +
   `IPPROTO_ICMP`) — no subprocess spawning, no dependencies. One
   background thread per target runs continuously. See
-  [PLAN.md](PLAN.md) for the full rationale on why we chose this over
+  [AGENTS.md](AGENTS.md) for the full rationale on why we chose this over
   shelling out to `ping` or using a third-party library.
 
 - **Tailscale** runs `tailscale status --json` periodically, cached
