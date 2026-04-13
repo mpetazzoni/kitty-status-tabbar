@@ -17,7 +17,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, NamedTuple
+from typing import NamedTuple
 
 from kitty.boss import get_boss
 from kitty.fast_data_types import Screen, add_timer
@@ -39,8 +39,6 @@ from kitty.tab_bar import (
 PING_TARGETS = ["1.1.1.1", "8.8.8.8"]
 PING_INTERVAL = 2.0  # seconds between pings
 PING_TIMEOUT = 2.0  # seconds before ping gives up
-TAILSCALE_TTL = 10.0  # seconds between tailscale checks
-BATTERY_TTL = 30.0  # seconds between battery checks
 TAB_BAR_REDRAW = 2.0  # seconds between tab bar redraws
 
 # Colors — Catppuccin Mocha palette, pre-converted to Kitty's as_rgb
@@ -71,39 +69,6 @@ class Cell(NamedTuple):
     icon: str
     color: int  # pre-converted as_rgb color for the icon
     text: str
-
-
-# ============================================================================
-# Cached Value Helper
-# ============================================================================
-
-
-class CachedValue[T]:
-    """A value that refreshes via a callback when its TTL expires.
-
-    On first access, fetches synchronously so we have something to show.
-    Subsequent refreshes are scheduled via Kitty's add_timer to avoid
-    blocking the UI thread.
-    """
-
-    def __init__(self, fetch: Callable[[], T], ttl: float) -> None:
-        self._fetch = fetch
-        self._ttl = ttl
-        self._value: T | None = None
-        self._last_refresh: float = 0.0
-
-    def get(self) -> T | None:
-        now = time.time()
-        if self._value is None:
-            self._value = self._fetch()
-            self._last_refresh = now
-        elif (now - self._last_refresh) > self._ttl:
-            add_timer(self._timer_refresh, 0.1, False)
-        return self._value
-
-    def _timer_refresh(self, timer_id: int) -> None:
-        self._value = self._fetch()
-        self._last_refresh = time.time()
 
 
 # ============================================================================
@@ -326,13 +291,10 @@ def _fetch_tailscale_status() -> TailscaleState:
         return TailscaleState(backend_state="Error")
 
 
-_tailscale_cache = CachedValue(_fetch_tailscale_status, TAILSCALE_TTL)
-
-
 def _get_tailscale_state() -> TailscaleState | None:
     """Get current tailscale state, or None if tailscale isn't installed."""
-    state = _tailscale_cache.get()
-    if state and state.backend_state == "NotInstalled":
+    state = _fetch_tailscale_status()
+    if state.backend_state == "NotInstalled":
         return None
     return state
 
@@ -378,13 +340,10 @@ def _fetch_battery_status() -> BatteryState:
         return BatteryState()
 
 
-_battery_cache = CachedValue(_fetch_battery_status, BATTERY_TTL)
-
-
 def _get_battery_state() -> BatteryState | None:
     """Get current battery state, or None if no battery detected."""
-    state = _battery_cache.get()
-    return state if state and state.present else None
+    state = _fetch_battery_status()
+    return state if state.present else None
 
 
 # ============================================================================
