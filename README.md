@@ -40,12 +40,30 @@ directory.
 
 ## Installation
 
+Run the installer:
+
+```sh
+curl -sL https://github.com/mpetazzoni/kitty-status-tabbar/releases/latest/download/install.sh | sh
+```
+
+This will:
+- Download `tab_bar.py` into `~/.config/kitty/`
+- Add the required settings to your `kitty.conf`
+- Set up a Tailscale CLI wrapper if needed (macOS)
+
+Then reload Kitty (`ctrl+shift+f5`) or restart it.
+
+### Manual installation
+
+<details>
+<summary>Click to expand</summary>
+
 1. Download `tab_bar.py` from the
    [latest release](https://github.com/mpetazzoni/kitty-status-tabbar/releases/latest)
    into your Kitty config directory:
 
    ```sh
-   curl -L https://github.com/mpetazzoni/kitty-status-tabbar/releases/latest/download/tab_bar.py \
+   curl -fsSL https://github.com/mpetazzoni/kitty-status-tabbar/releases/latest/download/tab_bar.py \
      -o ~/.config/kitty/tab_bar.py
    ```
 
@@ -80,6 +98,8 @@ directory.
    If Tailscale isn't installed, the Tailscale cell is simply hidden.
 
 4. Reload Kitty (`ctrl+shift+f5`) or restart it.
+
+</details>
 
 ## Configuration
 
