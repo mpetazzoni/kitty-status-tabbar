@@ -1,18 +1,26 @@
 # kitty-status-tabbar
 
-A custom Kitty tab bar that displays real-time network connectivity
-status (ping latency + Tailscale + battery) in the right side of the
-tab bar.
+A custom Kitty tab bar that displays real-time system status (ping
+latency, Tailscale, battery) in the right side of the tab bar.
 
-## How to work
+## Workflow
 
-* Build and document a plan
-* Record this plan into this PLAN.md file
-* Make a todo-list in PLAN.md
-* Keep the plan, and the todo-list, updated in PLAN.md at every step of
-  the way
-* Make a Git repository, work locally directly in the main branch (this
-  supersedes the instructions of my dev-workflow skill)
+- Work directly on `main` (no feature branches)
+- Commit with conventional commit messages (`feat:`, `fix:`, `refactor:`, etc.)
+
+### Releasing
+
+1. Commit the changes and push to `main`
+2. Tag: `git tag v<major>.<minor>.<patch>`
+3. Push the tag: `git push --tags`
+4. Create a GitHub release with assets:
+   ```sh
+   gh release create v<version> --title "v<version>" --notes "<description>"
+   gh release upload v<version> tab_bar.py install.sh
+   ```
+   The `install.sh` script points users at `releases/latest/download/`,
+   so uploading both files as release assets is required for the install
+   script to work.
 
 ## Architecture
 
@@ -32,9 +40,9 @@ custom` and a `tab_bar.py` file in the kitty config directory.
    display the best (minimum) result. If one target fails but the other
    succeeds, we're still online. Both fail = offline.
 
-3. **Tailscale check** runs `tailscale status --json` periodically
-   (cached with ~10s TTL via lazy-refresh timer) to check connection
-   status. Gracefully skipped if Tailscale isn't installed.
+3. **Tailscale and battery** are fetched fresh on every redraw tick
+   (every 2s). Both are fast local calls (`tailscale status --json` is
+   local IPC; `pmset -g batt` is instant). No caching layer needed.
 
 4. **`add_timer()`** from Kitty's API triggers periodic tab bar redraws
    so the status stays current.
@@ -98,8 +106,7 @@ We considered three approaches:
 
 ### Tailscale strategy
 
-- Run `tailscale status --json` via subprocess
-- Cache result with 10s TTL (lazy-refresh pattern)
+- Run `tailscale status --json` via subprocess on every redraw tick
 - Parse JSON for `BackendState` field
 - Display based on state:
   - `Running`: `󰒍 my-tailnet` (green) — extract name from
@@ -116,9 +123,9 @@ We considered three approaches:
 
 ### Battery strategy
 
-- Run `pmset -g batt` (macOS) — instant, no dependencies
+- Run `pmset -g batt` (macOS) on every redraw tick — instant, no
+  dependencies
 - Parse percentage and charging/discharging state
-- Cache with 30s TTL (battery doesn't change fast)
 - Color-coded icon based on level + charging state:
   - 80-100%: green (󰂅 charging / 󰁹 discharging)
   - 50-79%: green charging / yellow discharging
@@ -138,17 +145,7 @@ We considered three approaches:
 | File                 | Purpose                                    |
 |----------------------|--------------------------------------------|
 | `tab_bar.py`         | Custom tab bar with network status cells   |
+| `install.sh`         | One-step install script                    |
 | `kitty.conf.example` | Example kitty.conf snippet to enable it    |
-| `PLAN.md`            | Living plan document                       |
+| `PLAN.md`            | Architecture & agent instructions           |
 | `README.md`          | Installation & usage instructions          |
-
-## Todo
-
-- [x] Research Kitty custom tab bar API
-- [x] Write plan into PLAN.md
-- [x] Implement `tab_bar.py` with ping monitoring
-- [x] Add Tailscale status check
-- [x] Add battery percentage display
-- [x] Create `kitty.conf.example` with required settings
-- [x] Test & iterate
-- [x] Write README with installation instructions
