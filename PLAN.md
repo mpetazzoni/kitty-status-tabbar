@@ -1,7 +1,8 @@
-# kitty-ping-panel
+# kitty-status-tabbar
 
 A custom Kitty tab bar that displays real-time network connectivity
-status (ping latency + Tailscale) in the bottom-right of the tab bar.
+status (ping latency + Tailscale + battery) in the right side of the
+tab bar.
 
 ## How to work
 
