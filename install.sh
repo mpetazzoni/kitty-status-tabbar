@@ -29,7 +29,9 @@ echo ""
 mkdir -p "${KITTY_CONF_DIR}"
 
 if [ -f "${TAB_BAR}" ]; then
-    warn "Overwriting existing ${TAB_BAR}"
+    backup="${TAB_BAR}.backup.$(date +%Y%m%d%H%M%S)"
+    warn "Existing tab_bar.py found — backing up to ${backup}"
+    cp "${TAB_BAR}" "${backup}"
 fi
 
 info "Downloading tab_bar.py..."
