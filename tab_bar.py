@@ -306,22 +306,6 @@ def _fetch_tailscale_status() -> TailscaleState:
             text=True,
             timeout=5,
         )
-        _f.write(f"tailscale rc: {_r.returncode}\n")
-        _f.write(f"tailscale stdout[:200]: {_r.stdout[:200]}\n")
-        _f.write(f"tailscale stderr: {_r.stderr[:200]}\n")
-    except Exception as _e:
-        _f.write(f"tailscale error: {_e}\n")
-
-
-def _fetch_tailscale_status() -> TailscaleState:
-    """Run tailscale status --json and parse the result."""
-    try:
-        result = subprocess.run(
-            ["tailscale", "status", "--json"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
         if result.returncode != 0:
             return TailscaleState(backend_state="Error")
 
