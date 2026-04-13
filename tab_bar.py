@@ -37,11 +37,11 @@ from kitty.tab_bar import (
 # ============================================================================
 
 PING_TARGETS = ["1.1.1.1", "8.8.8.8"]
-PING_INTERVAL = 2.0      # seconds between pings
-PING_TIMEOUT = 2.0       # seconds before ping gives up
-TAILSCALE_TTL = 10.0     # seconds between tailscale checks
-BATTERY_TTL = 30.0       # seconds between battery checks
-TAB_BAR_REDRAW = 2.0     # seconds between tab bar redraws
+PING_INTERVAL = 2.0  # seconds between pings
+PING_TIMEOUT = 2.0  # seconds before ping gives up
+TAILSCALE_TTL = 10.0  # seconds between tailscale checks
+BATTERY_TTL = 30.0  # seconds between battery checks
+TAB_BAR_REDRAW = 2.0  # seconds between tab bar redraws
 
 # Colors — Catppuccin Mocha palette, pre-converted for Kitty's drawing API.
 # We convert hex -> to_color -> int -> as_rgb once at import time so the
@@ -147,7 +147,7 @@ def _icmp_checksum(data: bytes) -> int:
     words = struct.unpack("!%dH" % (len(data) // 2), data)
     s = sum(words)
     s = (s >> 16) + (s & 0xFFFF)  # fold high 16 into low 16
-    s += s >> 16                    # fold again if that produced a carry
+    s += s >> 16  # fold again if that produced a carry
     return ~s & 0xFFFF
 
 
@@ -169,6 +169,21 @@ def _build_icmp_packet() -> tuple[bytes, int, int]:
         ICMP_HEADER_FORMAT, ICMP_ECHO_REQUEST, 0, checksum, icmp_id, seq
     )
     return header + payload, icmp_id, seq
+
+
+def _icmp_offset(data: bytes) -> int:
+    """Find the start of the ICMP header in a received packet.
+
+    On macOS, SOCK_DGRAM + IPPROTO_ICMP includes the IP header in
+    received packets (unlike Linux, which strips it). This is a known
+    macOS kernel behavior. We detect the IP header by checking if the
+    first nibble is 0x4 (IPv4) and use the IHL field to skip past it.
+    See: https://lists.endsoftwarepatents.org/archive/html/qemu-devel/2018-08/msg02811.html
+    """
+    if len(data) > 0 and (data[0] & 0xF0) == 0x40:
+        # IPv4 header present — IHL field gives header length in 32-bit words
+        return (data[0] & 0x0F) * 4
+    return 0
 
 
 def _ping_host(target: str, timeout: float = PING_TIMEOUT) -> float | None:
@@ -195,10 +210,11 @@ def _ping_host(target: str, timeout: float = PING_TIMEOUT) -> float | None:
             sock.settimeout(remaining)
             data, _ = sock.recvfrom(1024)
 
-            if len(data) < ICMP_HEADER_SIZE:
+            offset = _icmp_offset(data)
+            if len(data) < offset + ICMP_HEADER_SIZE:
                 continue
             resp_type, _, _, resp_id, resp_seq = struct.unpack(
-                ICMP_HEADER_FORMAT, data[:ICMP_HEADER_SIZE]
+                ICMP_HEADER_FORMAT, data[offset : offset + ICMP_HEADER_SIZE]
             )
             if resp_type == ICMP_ECHO_REPLY and resp_id == icmp_id and resp_seq == seq:
                 return (time.monotonic() - start) * 1000
@@ -422,8 +438,31 @@ def _build_battery_cell() -> Cell | None:
     return Cell("󰂎 ", COLOR_RED, f"{state.percent}%")
 
 
-# Status cells in display order: battery, ping, tailscale
-_CELL_BUILDERS = (_build_battery_cell, _build_ping_cell, _build_tailscale_cell)
+# Spinner: advances once per redraw timer tick (not per draw_tab call).
+# The timer callback increments the counter; draw_tab just reads it.
+_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_spinner_index = 0
+
+
+def _advance_spinner() -> None:
+    """Called by the redraw timer to advance the spinner one frame."""
+    global _spinner_index
+    _spinner_index += 1
+
+
+def _build_spinner_cell() -> Cell:
+    """Build a spinner cell. Proof of life for the redraw timer."""
+    frame = _SPINNER_FRAMES[_spinner_index % len(_SPINNER_FRAMES)]
+    return Cell(frame + " ", COLOR_GRAY, "")
+
+
+# Status cells in display order: battery, ping, tailscale, spinner
+_CELL_BUILDERS = (
+    _build_battery_cell,
+    _build_ping_cell,
+    _build_tailscale_cell,
+    _build_spinner_cell,
+)
 
 
 def _build_cells() -> list[Cell]:
@@ -479,6 +518,7 @@ _timer_id = None
 
 def _redraw_tab_bar(timer_id: int) -> None:
     """Mark all tab bars as dirty, triggering a redraw."""
+    _advance_spinner()
     for tm in get_boss().all_tab_managers:
         tm.mark_tab_bar_dirty()
 

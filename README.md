@@ -53,11 +53,26 @@ directory.
 
    ```conf
    tab_bar_style custom
-   tab_powerline_style round
    tab_bar_min_tabs 1
    ```
 
-3. Reload Kitty (`ctrl+shift+f5`) or restart it.
+3. **(Tailscale users on macOS)** The macOS App Store version of
+   Tailscale doesn't put the CLI on your PATH. Symlinks don't work
+   due to the App Store sandbox. Create a wrapper script instead:
+
+   ```sh
+   mkdir -p ~/.local/bin
+   cat > ~/.local/bin/tailscale << 'EOF'
+   #!/bin/sh
+   exec /Applications/Tailscale.app/Contents/MacOS/Tailscale "$@"
+   EOF
+   chmod +x ~/.local/bin/tailscale
+   ```
+
+   Make sure `~/.local/bin` is in your PATH. If Tailscale isn't
+   installed or not on PATH, the Tailscale cell is simply hidden.
+
+4. Reload Kitty (`ctrl+shift+f5`) or restart it.
 
 ## Configuration
 

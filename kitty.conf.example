@@ -1,11 +1,11 @@
-# kitty-ping-panel — add these to your kitty.conf
-# See: https://github.com/your-user/kitty-ping-panel
+# kitty-status-tabbar — add these to your kitty.conf
+# See: https://github.com/mpetazzoni/kitty-status-tabbar
 
 # Use custom tab bar (required)
 tab_bar_style custom
 
-# Powerline round separators (optional, but looks nice)
-tab_powerline_style round
+# Powerline separator style (optional — works with slanted, round, or angled)
+tab_powerline_style slanted
 
 # Tab bar at the bottom
 tab_bar_edge bottom

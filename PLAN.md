@@ -123,8 +123,8 @@ We considered three approaches:
 
 ### Tab rendering
 
-- Delegate to Kitty's built-in `draw_tab_with_powerline` (round style)
-  for tab rendering
+- Delegate to Kitty's built-in `draw_tab_with_powerline` for tab
+  rendering (works with any powerline style: slanted, round, angled)
 - Custom code only handles the right-aligned status cells
 - This keeps the tab rendering battle-tested and our code focused
 
