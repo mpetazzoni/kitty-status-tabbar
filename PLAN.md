@@ -108,6 +108,10 @@ We considered three approaches:
   - `Starting`: `󰒍 connecting...` (yellow)
   - Error/other: `󰒎 unknown` (red)
 - If `tailscale` binary not found, skip the cell entirely
+- **PATH caveat**: Kitty GUI apps run with a minimal PATH
+  (`/usr/bin:/bin:/usr/sbin:/sbin`) that doesn't include user
+  directories. We search `~/.local/bin`, Homebrew paths, and the
+  macOS app bundle directly.
 
 ### Battery strategy
 

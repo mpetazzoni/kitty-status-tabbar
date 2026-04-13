@@ -264,7 +264,53 @@ class TailscaleState:
     tailnet_name: str = ""
 
 
-_tailscale_available: bool | None = None  # None = not yet checked
+# Kitty GUI apps run with a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin)
+# that doesn't include user directories like ~/.local/bin or Homebrew.
+# We search known locations for the tailscale CLI.
+_TAILSCALE_SEARCH_PATHS = [
+    os.path.expanduser("~/.local/bin/tailscale"),
+    "/opt/homebrew/bin/tailscale",
+    "/usr/local/bin/tailscale",
+    "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+]
+_tailscale_bin: str | None = None  # resolved on first use
+
+
+def _find_tailscale() -> str:
+    """Find the tailscale binary. Returns path or empty string.
+
+    Checks shutil.which first (in case it's on PATH), then falls back
+    to known macOS locations.
+    """
+    found = shutil.which("tailscale")
+    if found:
+        return found
+    for path in _TAILSCALE_SEARCH_PATHS:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return ""
+
+
+def _fetch_tailscale_status() -> TailscaleState:
+    """Run tailscale status --json and parse the result."""
+    global _tailscale_bin
+    if _tailscale_bin is None:
+        _tailscale_bin = _find_tailscale()
+    if not _tailscale_bin:
+        return TailscaleState(backend_state="NotInstalled")
+
+    try:
+        result = subprocess.run(
+            [_tailscale_bin, "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        _f.write(f"tailscale rc: {_r.returncode}\n")
+        _f.write(f"tailscale stdout[:200]: {_r.stdout[:200]}\n")
+        _f.write(f"tailscale stderr: {_r.stderr[:200]}\n")
+    except Exception as _e:
+        _f.write(f"tailscale error: {_e}\n")
 
 
 def _fetch_tailscale_status() -> TailscaleState:
@@ -306,12 +352,10 @@ _tailscale_cache = CachedValue(_fetch_tailscale_status, TAILSCALE_TTL)
 
 def _get_tailscale_state() -> TailscaleState | None:
     """Get current tailscale state, or None if tailscale isn't installed."""
-    global _tailscale_available
-    if _tailscale_available is None:
-        _tailscale_available = shutil.which("tailscale") is not None
-    if not _tailscale_available:
+    state = _tailscale_cache.get()
+    if state and state.backend_state == "NotInstalled":
         return None
-    return _tailscale_cache.get()
+    return state
 
 
 # ============================================================================
