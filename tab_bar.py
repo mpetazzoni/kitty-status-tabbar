@@ -45,12 +45,6 @@ TAB_BAR_REDRAW = 2.0  # seconds between tab bar redraws
 
 # Colors — Catppuccin Mocha palette, pre-converted to Kitty's as_rgb
 # format at import time so the draw loop pays zero conversion cost.
-_HEX_GREEN = "#a6e3a1"
-_HEX_YELLOW = "#f9e2af"
-_HEX_ORANGE = "#fab387"
-_HEX_RED = "#f38ba8"
-_HEX_GRAY = "#6c7086"
-_HEX_TEXT = "#cdd6f4"
 
 
 def _hex_to_rgb(hex_color: str) -> int:
@@ -58,12 +52,12 @@ def _hex_to_rgb(hex_color: str) -> int:
     return as_rgb(int(to_color(hex_color)))
 
 
-COLOR_GREEN = _hex_to_rgb(_HEX_GREEN)
-COLOR_YELLOW = _hex_to_rgb(_HEX_YELLOW)
-COLOR_ORANGE = _hex_to_rgb(_HEX_ORANGE)
-COLOR_RED = _hex_to_rgb(_HEX_RED)
-COLOR_GRAY = _hex_to_rgb(_HEX_GRAY)
-COLOR_TEXT = _hex_to_rgb(_HEX_TEXT)
+COLOR_GREEN = _hex_to_rgb("#a6e3a1")
+COLOR_YELLOW = _hex_to_rgb("#f9e2af")
+COLOR_ORANGE = _hex_to_rgb("#fab387")
+COLOR_RED = _hex_to_rgb("#f38ba8")
+COLOR_GRAY = _hex_to_rgb("#6c7086")
+COLOR_TEXT = _hex_to_rgb("#cdd6f4")
 
 
 # ============================================================================
