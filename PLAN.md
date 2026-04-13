@@ -45,13 +45,14 @@ Right side of the tab bar:
 
 ```
 [tabs...]              󰁹 62%  󰤨  23ms  󰒍 my-tailnet
-[tabs...]              󰁺 12%  󰤭  offline  󰒎 TS: down
+[tabs...]              󰁺 12%  󰤭  offline  󰒎 stopped
 ```
 
 When Tailscale is connected, we show the tailnet name (from
-`CurrentTailnet.Name` or `MagicDNSSuffix`). When it's down, we show
-"TS: down". Battery shows percentage with a color-coded icon that
-reflects charge level and charging state.
+`CurrentTailnet.Name` or `MagicDNSSuffix`). When it's not connected,
+we show the specific state (stopped, needs login, connecting, etc.).
+Battery shows percentage with a color-coded icon that reflects charge
+level and charging state.
 
 ### Latency color buckets
 
@@ -149,5 +150,5 @@ We considered three approaches:
 - [x] Add Tailscale status check
 - [x] Add battery percentage display
 - [x] Create `kitty.conf.example` with required settings
-- [ ] Test & iterate
-- [ ] Write README with installation instructions
+- [x] Test & iterate
+- [x] Write README with installation instructions

@@ -57,20 +57,27 @@ directory.
    ```
 
 3. **(Tailscale users on macOS)** The macOS App Store version of
-   Tailscale doesn't put the CLI on your PATH. Symlinks don't work
-   due to the App Store sandbox. Create a wrapper script instead:
+   Tailscale doesn't put the CLI on your PATH, and symlinks don't
+   work due to the App Store sandbox. Create a wrapper script in one
+   of the locations the plugin searches (`~/.local/bin`,
+   `/opt/homebrew/bin`, or `/usr/local/bin`):
 
    ```sh
    mkdir -p ~/.local/bin
+   ```
+
+   ```sh
    cat > ~/.local/bin/tailscale << 'EOF'
    #!/bin/sh
    exec /Applications/Tailscale.app/Contents/MacOS/Tailscale "$@"
    EOF
+   ```
+
+   ```sh
    chmod +x ~/.local/bin/tailscale
    ```
 
-   Make sure `~/.local/bin` is in your PATH. If Tailscale isn't
-   installed or not on PATH, the Tailscale cell is simply hidden.
+   If Tailscale isn't installed, the Tailscale cell is simply hidden.
 
 4. Reload Kitty (`ctrl+shift+f5`) or restart it.
 
