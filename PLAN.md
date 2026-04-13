@@ -69,9 +69,30 @@ Airplane-wifi-friendly thresholds:
 - Ping both `1.1.1.1` (Cloudflare) and `8.8.8.8` (Google) in parallel
   using background threads
 - Display the best (minimum) RTT from the two targets
-- Use `ping -c 1 -W 2 <target>` — single packet, 2s timeout
-- Ping interval: every 2 seconds
+- Ping interval: every 2 seconds, 2s timeout per ping
 - Store results in a thread-safe shared dict
+
+#### Why pure Python ICMP instead of shelling out to `ping`?
+
+We considered three approaches:
+
+1. **`subprocess.run(["ping", "-c", "1", ...])`** — Simple, but spawns
+   4 processes per cycle (2 targets × 2s interval). Requires parsing
+   stdout which varies across OS versions. Wasteful for something that
+   runs continuously for the lifetime of the terminal.
+
+2. **Third-party library (`icmplib`)** — Clean API, but Kitty uses its
+   own bundled Python interpreter. Installing packages into Kitty's
+   Python is fragile and breaks across Kitty updates. We want zero
+   external dependencies.
+
+3. **Pure Python ICMP sockets** ✅ — Uses `SOCK_DGRAM` + `IPPROTO_ICMP`
+   which works **unprivileged on macOS** (no root/setuid needed). Builds
+   ICMP echo request packets directly (~30 lines), measures RTT with
+   `time.monotonic()`. Zero dependencies, no subprocess overhead, precise
+   timing. The only downside is it's macOS-specific (Linux requires
+   `net.ipv4.ping_group_range` sysctl or `CAP_NET_RAW`), but this
+   project targets macOS anyway.
 
 ### Tailscale strategy
 

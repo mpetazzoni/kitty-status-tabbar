@@ -7,8 +7,11 @@ See PLAN.md for full design details.
 """
 
 import json
+import os
 import re
 import shutil
+import socket
+import struct
 import subprocess
 import threading
 import time
@@ -49,25 +52,82 @@ COLOR_BLUE = "#89b4fa"
 COLOR_TEXT = "#cdd6f4"
 
 # ============================================================================
-# Ping Monitor
+# Ping Monitor (pure Python ICMP — no subprocess, no dependencies)
+#
+# Why not shell out to `ping`? Three reasons:
+#   1. Spawning 4 processes every 2s for the lifetime of the terminal is
+#      wasteful — this runs in a background thread with zero process overhead.
+#   2. Parsing `ping` stdout is fragile across OS versions.
+#   3. Third-party libs (icmplib) can't be installed into Kitty's bundled
+#      Python without breaking on Kitty updates.
+#
+# We use SOCK_DGRAM + IPPROTO_ICMP which works unprivileged on macOS
+# (no root/setuid needed). We build ICMP echo request packets directly
+# and measure RTT with time.monotonic(). See PLAN.md for full rationale.
 # ============================================================================
 
 _ping_results: dict[str, float | None] = {t: None for t in PING_TARGETS}
 _ping_lock = threading.Lock()
 _ping_thread_started = False
+_ping_seq = 0
 
 
-def _parse_ping_rtt(output: str) -> float | None:
-    """Extract RTT in ms from ping output. Returns None on failure."""
-    # macOS/Linux: "round-trip min/avg/max/stddev = 12.3/12.5/12.8/0.2 ms"
-    match = re.search(r"min/avg/max/(?:std-dev|stddev|mdev)\s*=\s*([\d.]+)", output)
-    if match:
-        return float(match.group(1))
-    # Fallback: "time=12.3 ms"
-    match = re.search(r"time[=<]([\d.]+)\s*ms", output)
-    if match:
-        return float(match.group(1))
-    return None
+def _icmp_checksum(data: bytes) -> int:
+    """Calculate ICMP checksum (RFC 1071)."""
+    if len(data) % 2:
+        data += b"\x00"
+    s = sum(struct.unpack("!%dH" % (len(data) // 2), data))
+    s = (s >> 16) + (s & 0xFFFF)
+    s += s >> 16
+    return ~s & 0xFFFF
+
+
+def _ping_host(target: str, timeout: float = 2.0) -> float | None:
+    """Send a single ICMP echo request and return RTT in ms, or None.
+
+    Uses SOCK_DGRAM + IPPROTO_ICMP which works unprivileged on macOS.
+    """
+    global _ping_seq
+    _ping_seq = (_ping_seq + 1) & 0xFFFF
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_ICMP)
+        sock.settimeout(timeout)
+    except OSError:
+        return None
+
+    try:
+        # Build ICMP echo request: type=8, code=0, checksum=0, id, seq
+        icmp_id = os.getpid() & 0xFFFF
+        header = struct.pack("!BBHHH", 8, 0, 0, icmp_id, _ping_seq)
+        payload = b"kittyping" + struct.pack("!d", time.time())
+        checksum = _icmp_checksum(header + payload)
+        header = struct.pack("!BBHHH", 8, 0, checksum, icmp_id, _ping_seq)
+        packet = header + payload
+
+        start = time.monotonic()
+        sock.sendto(packet, (target, 0))
+
+        while True:
+            elapsed = time.monotonic() - start
+            if elapsed >= timeout:
+                return None
+            sock.settimeout(timeout - elapsed)
+            data, _ = sock.recvfrom(1024)
+            # SOCK_DGRAM strips the IP header, so data starts at ICMP
+            if len(data) >= 8:
+                resp_type, resp_code, _, resp_id, resp_seq = struct.unpack(
+                    "!BBHHH", data[:8]
+                )
+                # Type 0 = echo reply; match our id and seq
+                if resp_type == 0 and resp_id == icmp_id and resp_seq == _ping_seq:
+                    rtt_ms = (time.monotonic() - start) * 1000
+                    return rtt_ms
+            # Not our packet — keep waiting
+    except (socket.timeout, OSError):
+        return None
+    finally:
+        sock.close()
 
 
 def _ping_loop() -> None:
@@ -85,16 +145,7 @@ def _ping_loop() -> None:
 
 def _ping_one(target: str) -> None:
     """Ping a single target and store the result."""
-    try:
-        result = subprocess.run(
-            ["ping", "-c", "1", "-W", str(PING_TIMEOUT), target],
-            capture_output=True,
-            text=True,
-            timeout=PING_TIMEOUT + 2,
-        )
-        rtt = _parse_ping_rtt(result.stdout) if result.returncode == 0 else None
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        rtt = None
+    rtt = _ping_host(target, timeout=PING_TIMEOUT)
     with _ping_lock:
         _ping_results[target] = rtt
 
