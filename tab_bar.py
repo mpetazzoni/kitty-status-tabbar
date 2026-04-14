@@ -101,7 +101,6 @@ _generation = id(object())
 get_boss()._tab_bar_gen = _generation
 
 _ping_results: dict[str, float | None] = {t: None for t in PING_TARGETS}
-_ping_lock = threading.Lock()
 
 
 def _icmp_checksum(data: bytes) -> int:
@@ -200,25 +199,29 @@ def _ping_target_loop(target: str, gen: int) -> None:
     """
     while gen == get_boss()._tab_bar_gen:
         rtt = _ping_host(target)
-        with _ping_lock:
-            _ping_results[target] = rtt
+        _ping_results[target] = rtt
         time.sleep(PING_INTERVAL)
 
 
 def _get_best_ping() -> float | None:
     """Return the best (lowest) RTT across all targets, or None if all failed."""
-    with _ping_lock:
-        rtts = [r for r in _ping_results.values() if r is not None]
+    rtts = [r for r in _ping_results.values() if r is not None]
     return min(rtts) if rtts else None
 
 
-def _start_ping_threads() -> None:
-    """Start one background thread per ping target."""
+def _start_background_threads() -> None:
+    """Start background threads for ping, Tailscale, and battery polling."""
     for target in PING_TARGETS:
         t = threading.Thread(
             target=_ping_target_loop, args=(target, _generation), daemon=True
         )
         t.start()
+    threading.Thread(
+        target=_tailscale_poll_loop, args=(_generation,), daemon=True
+    ).start()
+    threading.Thread(
+        target=_battery_poll_loop, args=(_generation,), daemon=True
+    ).start()
 
 
 # ============================================================================
@@ -300,12 +303,25 @@ def _fetch_tailscale_status() -> TailscaleState:
         return TailscaleState(backend_state="Error")
 
 
+_tailscale_state: TailscaleState | None = None
+
+
+def _tailscale_poll_loop(gen: int) -> None:
+    """Background thread: continuously poll Tailscale status.
+
+    Exits when the generation on the Boss singleton changes (i.e. the
+    module was re-imported due to a config reload).
+    """
+    global _tailscale_state
+    while gen == get_boss()._tab_bar_gen:
+        state = _fetch_tailscale_status()
+        _tailscale_state = None if state.backend_state == "NotInstalled" else state
+        time.sleep(PING_INTERVAL)
+
+
 def _get_tailscale_state() -> TailscaleState | None:
     """Get current tailscale state, or None if tailscale isn't installed."""
-    state = _fetch_tailscale_status()
-    if state.backend_state == "NotInstalled":
-        return None
-    return state
+    return _tailscale_state
 
 
 # ============================================================================
@@ -349,10 +365,25 @@ def _fetch_battery_status() -> BatteryState:
         return BatteryState()
 
 
+_battery_state: BatteryState | None = None
+
+
+def _battery_poll_loop(gen: int) -> None:
+    """Background thread: continuously poll battery status.
+
+    Exits when the generation on the Boss singleton changes (i.e. the
+    module was re-imported due to a config reload).
+    """
+    global _battery_state
+    while gen == get_boss()._tab_bar_gen:
+        state = _fetch_battery_status()
+        _battery_state = state if state.present else None
+        time.sleep(PING_INTERVAL)
+
+
 def _get_battery_state() -> BatteryState | None:
     """Get current battery state, or None if no battery detected."""
-    state = _fetch_battery_status()
-    return state if state.present else None
+    return _battery_state
 
 
 # ============================================================================
@@ -407,10 +438,16 @@ class _BatteryTier(NamedTuple):
 
 
 _BATTERY_TIERS = [
-    _BatteryTier(80, "󰂅 ", "󰁹 ", COLOR_GREEN, COLOR_GREEN),
-    _BatteryTier(50, "󰂉 ", "󰂀 ", COLOR_GREEN, COLOR_YELLOW),
-    _BatteryTier(20, "󰂇 ", "󰁾 ", COLOR_YELLOW, COLOR_ORANGE),
-    _BatteryTier(0, "󰢜 ", "󰁺 ", COLOR_ORANGE, COLOR_RED),
+    _BatteryTier(90, "󰂅 ", "󰂂 ", COLOR_GREEN, COLOR_GREEN),
+    _BatteryTier(80, "󰂊 ", "󰂁 ", COLOR_GREEN, COLOR_GREEN),
+    _BatteryTier(70, "󰢞 ", "󰂀 ", COLOR_YELLOW, COLOR_YELLOW),
+    _BatteryTier(60, "󰂉 ", "󰁿 ", COLOR_YELLOW, COLOR_YELLOW),
+    _BatteryTier(50, "󰢝 ", "󰁾 ", COLOR_YELLOW, COLOR_YELLOW),
+    _BatteryTier(40, "󰂈 ", "󰁽 ", COLOR_ORANGE, COLOR_ORANGE),
+    _BatteryTier(30, "󰂇 ", "󰁼 ", COLOR_ORANGE, COLOR_ORANGE),
+    _BatteryTier(20, "󰂆 ", "󰁻 ", COLOR_ORANGE, COLOR_ORANGE),
+    _BatteryTier(10, "󰢜 ", "󰁺 ", COLOR_RED, COLOR_RED),
+    _BatteryTier(0, "󰢜 ", "󰁺 ", COLOR_RED, COLOR_RED),
 ]
 
 
@@ -543,7 +580,7 @@ def draw_tab(
     if not getattr(draw_tab, "_initialized", False):
         draw_tab._initialized = True
         add_timer(_make_redraw_callback(_generation), TAB_BAR_REDRAW, True)
-        _start_ping_threads()
+        _start_background_threads()
 
     draw_tab_with_powerline(
         draw_data,
