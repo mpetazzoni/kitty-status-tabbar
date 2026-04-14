@@ -9,8 +9,8 @@ See AGENTS.md for full design details.
 import json
 import os
 import random
-import re
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -197,10 +197,13 @@ def _ping_target_loop(target: str, gen: int) -> None:
     Exits when the generation on the Boss singleton changes (i.e. the
     module was re-imported due to a config reload).
     """
-    while gen == get_boss()._tab_bar_gen:
-        rtt = _ping_host(target)
-        _ping_results[target] = rtt
-        time.sleep(PING_INTERVAL)
+    try:
+        while gen == get_boss()._tab_bar_gen:
+            rtt = _ping_host(target)
+            _ping_results[target] = rtt
+            time.sleep(PING_INTERVAL)
+    except Exception:
+        pass
 
 
 def _get_best_ping() -> float | None:
@@ -209,19 +212,14 @@ def _get_best_ping() -> float | None:
     return min(rtts) if rtts else None
 
 
-def _start_background_threads() -> None:
-    """Start background threads for ping, Tailscale, and battery polling."""
+def _start_background_workers() -> None:
+    """Start ping threads and the external helper process."""
     for target in PING_TARGETS:
         t = threading.Thread(
             target=_ping_target_loop, args=(target, _generation), daemon=True
         )
         t.start()
-    threading.Thread(
-        target=_tailscale_poll_loop, args=(_generation,), daemon=True
-    ).start()
-    threading.Thread(
-        target=_battery_poll_loop, args=(_generation,), daemon=True
-    ).start()
+    _start_helper_process()
 
 
 # ============================================================================
@@ -266,62 +264,218 @@ def _find_tailscale() -> str:
 _tailscale_bin = _find_tailscale()
 
 
-def _fetch_tailscale_status() -> TailscaleState:
-    """Run tailscale status --json and parse the result."""
-    if not _tailscale_bin:
-        return TailscaleState(backend_state="NotInstalled")
+# ============================================================================
+# External Helper Process
+#
+# Forking subprocesses from background threads inside Kitty deadlocks.
+# We spawn a standalone Python script that polls battery and Tailscale,
+# writing results to a JSON temp file that draw_tab reads.
+# ============================================================================
 
+_HELPER_SCRIPT = r'''#!/usr/bin/env python3
+"""Standalone helper for kitty-status-tabbar.
+
+Polls battery (pmset) and Tailscale status, writing minimal display-
+relevant data to a JSON temp file. Runs outside Kitty's process to
+avoid fork-deadlocks.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+
+def fetch_battery() -> dict | None:
+    """Run pmset -g batt and return parsed battery info, or None."""
     try:
         result = subprocess.run(
-            [_tailscale_bin, "status", "--json"],
+            ["pmset", "-g", "batt"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if result.returncode != 0:
+            return None
+
+        match = re.search(r"(\d+)%;\s*([\w ]+);", result.stdout)
+        if not match:
+            return None
+
+        percent = int(match.group(1))
+        charging = match.group(2) in ("charging", "charged", "finishing charge")
+        return {"percent": percent, "charging": charging, "present": True}
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+
+
+def fetch_tailscale(tailscale_bin: str) -> dict | None:
+    """Run tailscale status --json and return parsed state, or None."""
+    try:
+        result = subprocess.run(
+            [tailscale_bin, "status", "--json"],
             capture_output=True,
             text=True,
             timeout=5,
         )
         if result.returncode != 0:
-            return TailscaleState(backend_state="Error")
+            return {"state": "Error", "tailnet": ""}
 
         data = json.loads(result.stdout)
         state = data.get("BackendState", "Unknown")
         tailnet_name = ""
 
         if state == "Running":
-            # Try CurrentTailnet.Name first, fall back to MagicDNSSuffix
             current_tailnet = data.get("CurrentTailnet", {})
             tailnet_name = current_tailnet.get("Name", "")
             if not tailnet_name:
                 magic_dns = data.get("MagicDNSSuffix", "")
                 tailnet_name = magic_dns.removesuffix(".ts.net") if magic_dns else ""
 
-        return TailscaleState(backend_state=state, tailnet_name=tailnet_name)
-    except (
-        subprocess.TimeoutExpired,
-        FileNotFoundError,
-        json.JSONDecodeError,
-        OSError,
-    ):
-        return TailscaleState(backend_state="Error")
+        return {"state": state, "tailnet": tailnet_name}
+    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError, OSError):
+        return {"state": "Error", "tailnet": ""}
 
 
-_tailscale_state: TailscaleState | None = None
+def write_status(output_path: str, battery: dict | None, tailscale: dict | None) -> None:
+    """Atomically write status to the output file."""
+    data = {
+        "battery": battery,
+        "tailscale": tailscale,
+        "pid": os.getpid(),
+    }
+    tmp_path = output_path + ".tmp"
+    try:
+        with open(tmp_path, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp_path, output_path)
+    except OSError as e:
+        print(f"Failed to write status: {e}", file=sys.stderr)
 
 
-def _tailscale_poll_loop(gen: int) -> None:
-    """Background thread: continuously poll Tailscale status.
+def _is_pid_alive(pid: int) -> bool:
+    """Check if a process is still running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
-    Exits when the generation on the Boss singleton changes (i.e. the
-    module was re-imported due to a config reload).
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="kitty-status-tabbar helper")
+    parser.add_argument("--tailscale-bin", default="", help="Path to tailscale binary")
+    parser.add_argument("--interval", type=float, default=2.0, help="Poll interval in seconds")
+    parser.add_argument("--output", required=True, help="Output JSON file path")
+    parser.add_argument("--parent-pid", type=int, default=0, help="Exit when this PID dies")
+    args = parser.parse_args()
+
+    # Restrict file permissions: created files are 600
+    os.umask(0o077)
+
+    print(f"Helper started (pid={os.getpid()}, interval={args.interval}s)", file=sys.stderr)
+
+    try:
+        while True:
+            # Exit if parent process (Kitty) is gone
+            if args.parent_pid and not _is_pid_alive(args.parent_pid):
+                print("Parent process gone, exiting", file=sys.stderr)
+                break
+
+            battery = fetch_battery()
+            tailscale = fetch_tailscale(args.tailscale_bin) if args.tailscale_bin else None
+            write_status(args.output, battery, tailscale)
+            time.sleep(args.interval)
+    finally:
+        # Clean up temp files
+        for path in (args.output, args.output + ".tmp"):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+_STATUS_FILE = f"/tmp/kitty-status-tabbar-{os.getuid()}.json"
+_HELPER_SCRIPT_PATH = f"/tmp/kitty-status-tabbar-helper-{os.getuid()}.py"
+_HELPER_LOG_PATH = f"/tmp/kitty-status-tabbar-helper-{os.getuid()}.log"
+
+_status_cache: dict | None = None
+_status_mtime: float = 0.0
+
+
+def _read_status_file() -> dict | None:
+    """Read and parse the status file, caching by mtime."""
+    global _status_cache, _status_mtime
+    try:
+        mtime = os.path.getmtime(_STATUS_FILE)
+        if mtime == _status_mtime and _status_cache is not None:
+            return _status_cache
+        with open(_STATUS_FILE) as f:
+            _status_cache = json.load(f)
+            _status_mtime = mtime
+            return _status_cache
+    except (OSError, json.JSONDecodeError):
+        return _status_cache  # return stale data on error
+
+
+def _start_helper_process() -> None:
+    """Spawn the external helper process for battery and Tailscale polling.
+
+    Kills any previously running helper (identified by pid in the status
+    file), writes the helper script to a temp file, and spawns it.
     """
-    global _tailscale_state
-    while gen == get_boss()._tab_bar_gen:
-        state = _fetch_tailscale_status()
-        _tailscale_state = None if state.backend_state == "NotInstalled" else state
-        time.sleep(PING_INTERVAL)
+    # Kill old helper if running
+    try:
+        with open(_STATUS_FILE) as f:
+            old_data = json.load(f)
+        old_pid = old_data.get("pid")
+        if old_pid:
+            os.kill(old_pid, signal.SIGTERM)
+    except (OSError, json.JSONDecodeError, TypeError, ProcessLookupError):
+        pass
+
+    # Write helper script (600 permissions to prevent tampering in /tmp)
+    fd = os.open(_HELPER_SCRIPT_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(_HELPER_SCRIPT)
+
+    # Spawn helper process
+    subprocess.Popen(
+        [
+            "/usr/bin/python3",
+            _HELPER_SCRIPT_PATH,
+            "--output",
+            _STATUS_FILE,
+            "--interval",
+            str(PING_INTERVAL),
+            "--parent-pid",
+            str(os.getpid()),
+            *(["--tailscale-bin", _tailscale_bin] if _tailscale_bin else []),
+        ],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=open(_HELPER_LOG_PATH, "w"),
+    )
 
 
-def _get_tailscale_state() -> TailscaleState | None:
+def _get_tailscale_state(data: dict | None = None) -> TailscaleState | None:
     """Get current tailscale state, or None if tailscale isn't installed."""
-    return _tailscale_state
+    if data is None:
+        data = _read_status_file()
+    if not data or data.get("tailscale") is None:
+        return None
+    ts = data["tailscale"]
+    return TailscaleState(
+        backend_state=ts.get("state", "Unknown"),
+        tailnet_name=ts.get("tailnet", ""),
+    )
 
 
 # ============================================================================
@@ -338,52 +492,20 @@ class BatteryState:
     present: bool = False
 
 
-def _fetch_battery_status() -> BatteryState:
-    """Run pmset -g batt (macOS) and parse the result."""
-    try:
-        result = subprocess.run(
-            ["pmset", "-g", "batt"],
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-        if result.returncode != 0:
-            return BatteryState()
-
-        # Parse: "62%; discharging;" or "85%; charging;" or "100%; not charging;"
-        match = re.search(
-            r"(\d+)%;\s*([\w ]+);",
-            result.stdout,
-        )
-        if not match:
-            return BatteryState()
-
-        percent = int(match.group(1))
-        charging = match.group(2) in ("charging", "charged", "finishing charge")
-        return BatteryState(percent=percent, charging=charging, present=True)
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return BatteryState()
-
-
-_battery_state: BatteryState | None = None
-
-
-def _battery_poll_loop(gen: int) -> None:
-    """Background thread: continuously poll battery status.
-
-    Exits when the generation on the Boss singleton changes (i.e. the
-    module was re-imported due to a config reload).
-    """
-    global _battery_state
-    while gen == get_boss()._tab_bar_gen:
-        state = _fetch_battery_status()
-        _battery_state = state if state.present else None
-        time.sleep(PING_INTERVAL)
-
-
-def _get_battery_state() -> BatteryState | None:
+def _get_battery_state(data: dict | None = None) -> BatteryState | None:
     """Get current battery state, or None if no battery detected."""
-    return _battery_state
+    if data is None:
+        data = _read_status_file()
+    if not data or data.get("battery") is None:
+        return None
+    b = data["battery"]
+    if not b.get("present", False):
+        return None
+    return BatteryState(
+        percent=b.get("percent", -1),
+        charging=b.get("charging", False),
+        present=True,
+    )
 
 
 # ============================================================================
@@ -410,9 +532,9 @@ def _build_ping_cell() -> Cell | None:
     return Cell("󰤨 ", color, text)
 
 
-def _build_tailscale_cell() -> Cell | None:
+def _build_tailscale_cell(status_data: dict | None = None) -> Cell | None:
     """Build the Tailscale status cell."""
-    state = _get_tailscale_state()
+    state = _get_tailscale_state(status_data)
     if state is None:
         return None
 
@@ -451,9 +573,9 @@ _BATTERY_TIERS = [
 ]
 
 
-def _build_battery_cell() -> Cell | None:
+def _build_battery_cell(status_data: dict | None = None) -> Cell | None:
     """Build the battery status cell."""
-    state = _get_battery_state()
+    state = _get_battery_state(status_data)
     if state is None:
         return None
 
@@ -485,18 +607,24 @@ def _build_spinner_cell() -> Cell:
     return Cell(frame + " ", COLOR_GRAY, "")
 
 
-# Status cells in display order: battery, ping, tailscale, spinner
-_CELL_BUILDERS = (
-    _build_battery_cell,
-    _build_ping_cell,
-    _build_tailscale_cell,
-    _build_spinner_cell,
-)
-
-
 def _build_cells() -> list[Cell]:
-    """Build all status cells, skipping any that return None."""
-    return [cell for b in _CELL_BUILDERS if (cell := b()) is not None]
+    """Build all status cells, skipping any that return None.
+
+    Reads the helper status file once and shares it across battery and
+    tailscale cell builders to avoid redundant stat/parse calls.
+    """
+    status_data = _read_status_file()
+    cells: list[Cell] = []
+    for builder in (
+        lambda: _build_battery_cell(status_data),
+        _build_ping_cell,
+        lambda: _build_tailscale_cell(status_data),
+        _build_spinner_cell,
+    ):
+        cell = builder()
+        if cell is not None:
+            cells.append(cell)
+    return cells
 
 
 # ============================================================================
@@ -580,7 +708,7 @@ def draw_tab(
     if not getattr(draw_tab, "_initialized", False):
         draw_tab._initialized = True
         add_timer(_make_redraw_callback(_generation), TAB_BAR_REDRAW, True)
-        _start_background_threads()
+        _start_background_workers()
 
     draw_tab_with_powerline(
         draw_data,

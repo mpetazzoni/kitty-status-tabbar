@@ -53,8 +53,9 @@ tab bar itself, via `tab_bar_style custom`.
 2. **Ping** runs in background threads (pure Python ICMP sockets,
    unprivileged on macOS). Two targets (`1.1.1.1`, `8.8.8.8`) pinged in
    parallel; best RTT displayed.
-3. **Tailscale and battery** are fetched fresh on every 2s redraw tick.
-   Both are fast local calls — no caching needed.
+3. **Tailscale and battery** are polled by a standalone helper process
+   that writes to a temp file; `draw_tab` reads the file (no forking
+   inside Kitty's process).
 4. `add_timer()` from Kitty's API triggers periodic redraws.
 
 ### Display format
@@ -69,9 +70,10 @@ tab bar itself, via `tab_bar_style custom`.
 - **Pure Python ICMP** instead of shelling out to `ping` — no subprocess
   overhead, no output parsing, uses `SOCK_DGRAM + IPPROTO_ICMP`
   (unprivileged on macOS). See code comments for full rationale.
-- **No caching** for battery/Tailscale — `pmset -g batt` and
-  `tailscale status --json` are both fast local calls, so we fetch fresh
-  every tick for immediate state reflection.
+- **External helper process** for battery/Tailscale — forking from
+  background threads inside Kitty deadlocks, so we spawn a standalone
+  Python script that polls and writes results to a JSON temp file.
+  `draw_tab` reads the file, which is instant and fork-free.
 - **Powerline delegation** — tab rendering uses Kitty's built-in
   `draw_tab_with_powerline`; custom code only handles status cells.
 - **PATH workaround** — Kitty GUI apps get minimal PATH; we search
