@@ -253,12 +253,14 @@ if __name__ != "__main__":
         s += s >> 16  # fold again if that produced a carry
         return ~s & 0xFFFF
 
-    def _build_icmp_packet() -> tuple[bytes, int, int]:
+    def _build_icmp_packet(target: str) -> tuple[bytes, int, int]:
         """Build an ICMP echo request packet.
 
         Returns (packet_bytes, icmp_id, sequence_number).
+        Each target gets a unique icmp_id derived from the target string
+        so that concurrent ping threads never consume each other's replies.
         """
-        icmp_id = os.getpid() & 0xFFFF
+        icmp_id = hash(target) & 0xFFFF
         seq = random.randint(0, 0xFFFF)
         payload = struct.pack("!d", time.monotonic())
 
@@ -299,7 +301,7 @@ if __name__ != "__main__":
             return None
 
         try:
-            packet, icmp_id, seq = _build_icmp_packet()
+            packet, icmp_id, seq = _build_icmp_packet(target)
             start = time.monotonic()
             sock.sendto(packet, (target, 0))
 
